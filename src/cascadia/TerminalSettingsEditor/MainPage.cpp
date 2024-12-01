@@ -6,6 +6,7 @@
 #include "MainPage.g.cpp"
 #include "Launch.h"
 #include "Interaction.h"
+#include "Compatibility.h"
 #include "Rendering.h"
 #include "RenderingViewModel.h"
 #include "Actions.h"
@@ -39,6 +40,7 @@ using namespace winrt::Windows::Foundation::Collections;
 static const std::wstring_view launchTag{ L"Launch_Nav" };
 static const std::wstring_view interactionTag{ L"Interaction_Nav" };
 static const std::wstring_view renderingTag{ L"Rendering_Nav" };
+static const std::wstring_view compatibilityTag{ L"Compatibility_Nav" };
 static const std::wstring_view actionsTag{ L"Actions_Nav" };
 static const std::wstring_view globalProfileTag{ L"GlobalProfile_Nav" };
 static const std::wstring_view addProfileTag{ L"AddProfile" };
@@ -278,6 +280,11 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                 // Don't navigate to the same page again.
                 return;
             }
+            else
+            {
+                // If we are navigating to a new page, scroll to the top
+                SettingsMainPage_ScrollViewer().ScrollToVerticalOffset(0);
+            }
 
             if (const auto navString = clickedItemContainer.Tag().try_as<hstring>())
             {
@@ -332,12 +339,21 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                     contentFrame().Navigate(xaml_typename<Editor::Profiles_Appearance>(), winrt::make<implementation::NavigateToProfileArgs>(profile, *this));
                     const auto crumb = winrt::make<Breadcrumb>(breadcrumbTag, RS_(L"Profile_Appearance/Header"), BreadcrumbSubPage::Profile_Appearance);
                     _breadcrumbs.Append(crumb);
+                    SettingsMainPage_ScrollViewer().ScrollToVerticalOffset(0);
+                }
+                else if (currentPage == ProfileSubPage::Terminal)
+                {
+                    contentFrame().Navigate(xaml_typename<Editor::Profiles_Terminal>(), profile);
+                    const auto crumb = winrt::make<Breadcrumb>(breadcrumbTag, RS_(L"Profile_Terminal/Header"), BreadcrumbSubPage::Profile_Terminal);
+                    _breadcrumbs.Append(crumb);
+                    SettingsMainPage_ScrollViewer().ScrollToVerticalOffset(0);
                 }
                 else if (currentPage == ProfileSubPage::Advanced)
                 {
                     contentFrame().Navigate(xaml_typename<Editor::Profiles_Advanced>(), profile);
                     const auto crumb = winrt::make<Breadcrumb>(breadcrumbTag, RS_(L"Profile_Advanced/Header"), BreadcrumbSubPage::Profile_Advanced);
                     _breadcrumbs.Append(crumb);
+                    SettingsMainPage_ScrollViewer().ScrollToVerticalOffset(0);
                 }
             }
         });
@@ -365,9 +381,15 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
             const auto crumb = winrt::make<Breadcrumb>(box_value(clickedItemTag), RS_(L"Nav_Rendering/Content"), BreadcrumbSubPage::None);
             _breadcrumbs.Append(crumb);
         }
+        else if (clickedItemTag == compatibilityTag)
+        {
+            contentFrame().Navigate(xaml_typename<Editor::Compatibility>(), winrt::make<CompatibilityViewModel>(_settingsClone.GlobalSettings()));
+            const auto crumb = winrt::make<Breadcrumb>(box_value(clickedItemTag), RS_(L"Nav_Compatibility/Content"), BreadcrumbSubPage::None);
+            _breadcrumbs.Append(crumb);
+        }
         else if (clickedItemTag == actionsTag)
         {
-            contentFrame().Navigate(xaml_typename<Editor::Actions>(), winrt::make<ActionsPageNavigationState>(_settingsClone));
+            contentFrame().Navigate(xaml_typename<Editor::Actions>(), winrt::make<ActionsViewModel>(_settingsClone));
             const auto crumb = winrt::make<Breadcrumb>(box_value(clickedItemTag), RS_(L"Nav_Actions/Content"), BreadcrumbSubPage::None);
             _breadcrumbs.Append(crumb);
         }
@@ -387,6 +409,10 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
             if (subPage == BreadcrumbSubPage::Profile_Appearance)
             {
                 profileVM.CurrentPage(ProfileSubPage::Appearance);
+            }
+            else if (subPage == BreadcrumbSubPage::Profile_Terminal)
+            {
+                profileVM.CurrentPage(ProfileSubPage::Terminal);
             }
             else if (subPage == BreadcrumbSubPage::Profile_Advanced)
             {
@@ -431,6 +457,15 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
 
         _SetupProfileEventHandling(profile);
 
+        if (profile.Orphaned())
+        {
+            contentFrame().Navigate(xaml_typename<Editor::Profiles_Base_Orphaned>(), winrt::make<implementation::NavigateToProfileArgs>(profile, *this));
+            const auto crumb = winrt::make<Breadcrumb>(box_value(profile), profile.Name(), BreadcrumbSubPage::None);
+            _breadcrumbs.Append(crumb);
+            profile.CurrentPage(ProfileSubPage::Base);
+            return;
+        }
+
         contentFrame().Navigate(xaml_typename<Editor::Profiles_Base>(), winrt::make<implementation::NavigateToProfileArgs>(profile, *this));
         const auto crumb = winrt::make<Breadcrumb>(box_value(profile), profile.Name(), BreadcrumbSubPage::None);
         _breadcrumbs.Append(crumb);
@@ -444,6 +479,10 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         else if (subPage == BreadcrumbSubPage::Profile_Appearance)
         {
             profile.CurrentPage(ProfileSubPage::Appearance);
+        }
+        else if (subPage == BreadcrumbSubPage::Profile_Terminal)
+        {
+            profile.CurrentPage(ProfileSubPage::Terminal);
         }
         else if (subPage == BreadcrumbSubPage::Profile_Advanced)
         {
@@ -460,7 +499,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                                 WI_IsFlagSet(rAltState, CoreVirtualKeyStates::Down);
 
         const auto target = altPressed ? SettingsTarget::DefaultsFile : SettingsTarget::SettingsFile;
-        _OpenJsonHandlers(nullptr, target);
+        OpenJson.raise(nullptr, target);
     }
 
     void MainPage::OpenJsonKeyDown(const IInspectable& /*sender*/, const Windows::UI::Xaml::Input::KeyRoutedEventArgs& args)
@@ -468,12 +507,13 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         if (args.Key() == VirtualKey::Enter || args.Key() == VirtualKey::Space)
         {
             const auto target = args.KeyStatus().IsMenuKeyDown ? SettingsTarget::DefaultsFile : SettingsTarget::SettingsFile;
-            _OpenJsonHandlers(nullptr, target);
+            OpenJson.raise(nullptr, target);
         }
     }
 
     void MainPage::SaveButton_Click(const IInspectable& /*sender*/, const RoutedEventArgs& /*args*/)
     {
+        _settingsClone.LogSettingChanges(false);
         _settingsClone.WriteSettingsToDisk();
     }
 
@@ -590,12 +630,32 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         _Navigate(profileViewModel, BreadcrumbSubPage::None);
     }
 
+    static MUX::Controls::InfoBadge _createGlyphIconBadge(wil::zwstring_view glyph)
+    {
+        MUX::Controls::InfoBadge badge;
+        MUX::Controls::FontIconSource icon;
+        icon.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily{ L"Segoe Fluent Icons, Segoe MDL2 Assets" });
+        icon.FontSize(12);
+        icon.Glyph(glyph);
+        badge.IconSource(icon);
+        return badge;
+    }
+
     MUX::Controls::NavigationViewItem MainPage::_CreateProfileNavViewItem(const Editor::ProfileViewModel& profile)
     {
         MUX::Controls::NavigationViewItem profileNavItem;
         profileNavItem.Content(box_value(profile.Name()));
         profileNavItem.Tag(box_value<Editor::ProfileViewModel>(profile));
-        profileNavItem.Icon(IconPathConverter::IconWUX(profile.Icon()));
+        profileNavItem.Icon(UI::IconPathConverter::IconWUX(profile.EvaluatedIcon()));
+
+        if (profile.Orphaned())
+        {
+            profileNavItem.InfoBadge(_createGlyphIconBadge(L"\xE7BA") /* Warning Triangle */);
+        }
+        else if (profile.Hidden())
+        {
+            profileNavItem.InfoBadge(_createGlyphIconBadge(L"\xED1A") /* Hide */);
+        }
 
         // Update the menu item when the icon/name changes
         auto weakMenuItem{ make_weak(profileNavItem) };
@@ -605,17 +665,21 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                 const auto& tag{ menuItem.Tag().as<Editor::ProfileViewModel>() };
                 if (args.PropertyName() == L"Icon")
                 {
-                    menuItem.Icon(IconPathConverter::IconWUX(tag.Icon()));
+                    menuItem.Icon(UI::IconPathConverter::IconWUX(tag.Icon()));
                 }
                 else if (args.PropertyName() == L"Name")
                 {
                     menuItem.Content(box_value(tag.Name()));
                 }
+                else if (args.PropertyName() == L"Hidden")
+                {
+                    menuItem.InfoBadge(tag.Hidden() ? _createGlyphIconBadge(L"\xED1A") /* Hide */ : nullptr);
+                }
             }
         });
 
         // Add an event handler for when the user wants to delete a profile.
-        profile.DeleteProfile({ this, &MainPage::_DeleteProfile });
+        profile.DeleteProfileRequested({ this, &MainPage::_DeleteProfile });
 
         return profileNavItem;
     }
@@ -655,6 +719,8 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
             {
                 _Navigate(newTag.as<hstring>(), BreadcrumbSubPage::None);
             }
+            // Since we are navigating to a new profile after deletion, scroll up to the top
+            SettingsMainPage_ScrollViewer().ChangeView(nullptr, 0.0, nullptr);
         }
     }
 
@@ -672,6 +738,12 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
     // can have mica too.
     void MainPage::_UpdateBackgroundForMica()
     {
+        // If we're in high contrast mode, don't override the theme.
+        if (Windows::UI::ViewManagement::AccessibilitySettings accessibilitySettings; accessibilitySettings.HighContrast())
+        {
+            return;
+        }
+
         bool isMicaAvailable = false;
 
         // Check to see if our hosting window supports Mica at all. We'll check
@@ -690,17 +762,23 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
             }
         }
 
-        if (!isMicaAvailable)
-        {
-            return;
-        }
-
         const auto& theme = _settingsSource.GlobalSettings().CurrentTheme();
-        const auto& requestedTheme = _settingsSource.GlobalSettings().CurrentTheme().RequestedTheme();
+        const bool hasThemeForSettings{ theme.Settings() != nullptr };
+        const auto& appTheme = theme.RequestedTheme();
+        const auto& requestedTheme = (hasThemeForSettings) ? theme.Settings().RequestedTheme() : appTheme;
 
         RequestedTheme(requestedTheme);
 
-        const auto bgKey = (theme.Window() != nullptr && theme.Window().UseMica()) ?
+        // Mica gets it's appearance from the app's theme, not necessarily the
+        // Page's theme. In the case of dark app, light settings, mica will be a
+        // dark color, and the text will also be dark, making the UI _very_ hard
+        // to read. (and similarly in the inverse situation).
+        //
+        // To mitigate this, don't set the transparent background in the case
+        // that our theme is different than the app's.
+        const bool actuallyUseMica = isMicaAvailable && (appTheme == requestedTheme);
+
+        const auto bgKey = (theme.Window() != nullptr && theme.Window().UseMica()) && actuallyUseMica ?
                                L"SettingsPageMicaBackground" :
                                L"SettingsPageBackground";
 

@@ -31,6 +31,7 @@
 #include <winrt/Windows.UI.Input.h>
 #include <winrt/Windows.UI.Popups.h>
 #include <winrt/Windows.UI.Text.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Automation.h>
 #include <winrt/Windows.UI.Xaml.Automation.Peers.h>
@@ -49,6 +50,7 @@
 #include <winrt/Microsoft.Terminal.Core.h>
 #include <winrt/Microsoft.Terminal.Control.h>
 #include <winrt/Microsoft.Terminal.Settings.Model.h>
+#include <winrt/Microsoft.Terminal.UI.h>
 
 #include <shlobj.h>
 #include <shobjidl_core.h>
@@ -56,5 +58,6 @@
 
 // Manually include til after we include Windows.Foundation to give it winrt superpowers
 #include "til.h"
+#include <til/winrt.h>
 
 #include <cppwinrt_utils.h>

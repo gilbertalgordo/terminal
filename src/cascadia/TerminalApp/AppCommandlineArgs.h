@@ -62,12 +62,14 @@ private:
         CLI::App* subcommand;
         CLI::Option* commandlineOption;
         CLI::Option* profileNameOption;
+        CLI::Option* sessionIdOption;
         CLI::Option* startingDirectoryOption;
         CLI::Option* titleOption;
         CLI::Option* tabColorOption;
         CLI::Option* suppressApplicationTitleOption;
         CLI::Option* colorSchemeOption;
         CLI::Option* appendCommandLineOption;
+        CLI::Option* inheritEnvOption;
     };
 
     struct NewPaneSubcommand : public NewTerminalSubcommand
@@ -91,15 +93,18 @@ private:
     CLI::App* _swapPaneCommand;
     CLI::App* _focusPaneCommand;
     CLI::App* _focusPaneShort;
+    CLI::App* _saveCommand;
 
     // Are you adding a new sub-command? Make sure to update _noCommandsProvided!
 
     std::string _profileName;
+    std::string _sessionId;
     std::string _startingDirectory;
     std::string _startingTitle;
     std::string _startingTabColor;
     std::string _startingColorScheme;
     bool _suppressApplicationTitle{ false };
+    bool _inheritEnvironment{ false };
 
     winrt::Microsoft::Terminal::Settings::Model::FocusDirection _moveFocusDirection{ winrt::Microsoft::Terminal::Settings::Model::FocusDirection::None };
     winrt::Microsoft::Terminal::Settings::Model::FocusDirection _swapPaneDirection{ winrt::Microsoft::Terminal::Settings::Model::FocusDirection::None };
@@ -119,6 +124,8 @@ private:
     bool _focusPrevTab{ false };
 
     int _focusPaneTarget{ -1 };
+    std::string _saveInputName;
+    std::string _keyChordOption;
     // Are you adding more args here? Make sure to reset them in _resetStateToDefault
 
     const Commandline* _currentCommandline{ nullptr };
@@ -137,6 +144,7 @@ private:
     winrt::Microsoft::Terminal::Settings::Model::NewTerminalArgs _getNewTerminalArgs(NewTerminalSubcommand& subcommand);
     void _addNewTerminalArgs(NewTerminalSubcommand& subcommand);
     void _buildParser();
+    void _buildSaveSnippetParser();
     void _buildNewTabParser();
     void _buildSplitPaneParser();
     void _buildFocusTabParser();

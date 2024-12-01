@@ -33,24 +33,19 @@ ConhostInternalGetSet::ConhostInternalGetSet(_In_ IIoProvider& io) :
 // - <none>
 void ConhostInternalGetSet::ReturnResponse(const std::wstring_view response)
 {
-    InputEventQueue inEvents;
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
 
-    // generate a paired key down and key up event for every
-    // character to be sent into the console's input buffer
-    for (const auto& wch : response)
+    // ConPTY should not respond to requests. That's the job of the terminal.
+    if (gci.IsInVtIoMode())
     {
-        // This wasn't from a real keyboard, so we're leaving key/scan codes blank.
-        auto keyEvent = SynthesizeKeyEvent(true, 1, 0, 0, wch, 0);
-        inEvents.push_back(keyEvent);
-        keyEvent.Event.KeyEvent.bKeyDown = false;
-        inEvents.push_back(keyEvent);
+        return;
     }
 
     // TODO GH#4954 During the input refactor we may want to add a "priority" input list
     // to make sure that "response" input is spooled directly into the application.
     // We switched this to an append (vs. a prepend) to fix GH#1637, a bug where two CPR
     // could collide with each other.
-    _io.GetActiveInputBuffer()->Write(inEvents);
+    _io.GetActiveInputBuffer()->WriteString(response);
 }
 
 // Routine Description:
@@ -65,25 +60,16 @@ StateMachine& ConhostInternalGetSet::GetStateMachine()
 }
 
 // Routine Description:
-// - Retrieves the text buffer for the active output buffer.
+// - Retrieves the text buffer and virtual viewport for the active output
+//   buffer. Also returns a flag indicating whether it's the main buffer.
 // Arguments:
 // - <none>
 // Return Value:
-// - a reference to the TextBuffer instance.
-TextBuffer& ConhostInternalGetSet::GetTextBuffer()
+// - a tuple with the buffer reference, viewport, and main buffer flag.
+ITerminalApi::BufferState ConhostInternalGetSet::GetBufferAndViewport()
 {
-    return _io.GetActiveOutputBuffer().GetTextBuffer();
-}
-
-// Routine Description:
-// - Retrieves the virtual viewport of the active output buffer.
-// Arguments:
-// - <none>
-// Return Value:
-// - the exclusive coordinates of the viewport.
-til::rect ConhostInternalGetSet::GetViewport() const
-{
-    return _io.GetActiveOutputBuffer().GetVirtualViewport().ToExclusive();
+    auto& info = _io.GetActiveOutputBuffer();
+    return { info.GetTextBuffer(), info.GetVirtualViewport().ToExclusive(), info.Next == nullptr };
 }
 
 // Routine Description:
@@ -95,21 +81,11 @@ til::rect ConhostInternalGetSet::GetViewport() const
 void ConhostInternalGetSet::SetViewportPosition(const til::point position)
 {
     auto& info = _io.GetActiveOutputBuffer();
-    const auto dimensions = info.GetViewport().Dimensions();
-    const auto windowRect = til::rect{ position, dimensions }.to_inclusive_rect();
-    THROW_IF_FAILED(ServiceLocator::LocateGlobals().api->SetConsoleWindowInfoImpl(info, true, windowRect));
-}
-
-// Method Description:
-// - Sets the current TextAttribute of the active screen buffer. Text
-//   written to this buffer will be written with these attributes.
-// Arguments:
-// - attrs: The new TextAttribute to use
-// Return Value:
-// - <none>
-void ConhostInternalGetSet::SetTextAttributes(const TextAttribute& attrs)
-{
-    _io.GetActiveOutputBuffer().SetAttributes(attrs);
+    THROW_IF_FAILED(info.SetViewportOrigin(true, position, true));
+    // SetViewportOrigin() only updates the virtual bottom (the bottom coordinate of the area
+    // in the text buffer a VT client writes its output into) when it's moving downwards.
+    // But this function is meant to truly move the viewport no matter what. Otherwise `tput reset` breaks.
+    info.UpdateBottom();
 }
 
 // Routine Description:
@@ -159,6 +135,16 @@ bool ConhostInternalGetSet::GetSystemMode(const Mode mode) const
 }
 
 // Routine Description:
+// - Sends the configured answerback message in response to an ENQ query.
+// Return Value:
+// - <none>
+void ConhostInternalGetSet::ReturnAnswerback()
+{
+    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    ReturnResponse(gci.GetAnswerbackMessage());
+}
+
+// Routine Description:
 // - Sends a notify message to play the "SystemHand" sound event.
 // Return Value:
 // - <none>
@@ -170,12 +156,13 @@ void ConhostInternalGetSet::WarningBell()
 // Routine Description:
 // - Sets the title of the console window.
 // Arguments:
-// - title - The null-terminated string to set as the window title
+// - title - The string to set as the window title
 // Return Value:
 // - <none>
 void ConhostInternalGetSet::SetWindowTitle(std::wstring_view title)
 {
-    ServiceLocator::LocateGlobals().getConsoleInformation().SetTitle(title);
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    gci.SetTitle(title.empty() ? gci.GetOriginalTitle() : title);
 }
 
 // Routine Description:
@@ -221,8 +208,14 @@ CursorType ConhostInternalGetSet::GetUserDefaultCursorStyle() const
 // - <none>
 void ConhostInternalGetSet::ShowWindow(bool showOrHide)
 {
-    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
-    const auto hwnd = gci.IsInVtIoMode() ? ServiceLocator::LocatePseudoWindow() : ServiceLocator::LocateConsoleWindow()->GetWindowHandle();
+    // ConPTY is supposed to be "transparent" to the VT application. Any VT it processes is given to the terminal.
+    // As such, it must not react to this "CSI 1 t" or "CSI 2 t" sequence. That's the job of the terminal.
+    // If the terminal encounters such a sequence, it can show/hide itself and let ConPTY know via its signal API.
+    const auto window = ServiceLocator::LocateConsoleWindow();
+    if (!window)
+    {
+        return;
+    }
 
     // GH#13301 - When we send this ShowWindow message, if we send it to the
     // conhost HWND, it's going to need to get processed by the window message
@@ -230,29 +223,55 @@ void ConhostInternalGetSet::ShowWindow(bool showOrHide)
     // However, ShowWindowAsync doesn't have this problem. It'll post the
     // message to the window thread, then immediately return, so we don't have
     // to worry about deadlocking.
+    const auto hwnd = window->GetWindowHandle();
     ::ShowWindowAsync(hwnd, showOrHide ? SW_SHOWNOACTIVATE : SW_MINIMIZE);
 }
 
 // Routine Description:
-// - Connects the SetConsoleOutputCP API call directly into our Driver Message servicing call inside Conhost.exe
+// - Set the code page used for translating text when calling A versions of I/O functions.
 // Arguments:
-// - codepage - the new output codepage of the console.
+// - codepage - the new code page of the console.
 // Return Value:
 // - <none>
-void ConhostInternalGetSet::SetConsoleOutputCP(const unsigned int codepage)
+void ConhostInternalGetSet::SetCodePage(const unsigned int codepage)
 {
-    THROW_IF_FAILED(DoSrvSetConsoleOutputCodePage(codepage));
+    LOG_IF_FAILED(DoSrvSetConsoleOutputCodePage(codepage));
+    LOG_IF_FAILED(DoSrvSetConsoleInputCodePage(codepage));
 }
 
 // Routine Description:
-// - Gets the codepage used for translating text when calling A versions of functions affecting the output buffer.
+// - Reset the code pages to their default values.
 // Arguments:
 // - <none>
 // Return Value:
-// - the outputCP of the console.
-unsigned int ConhostInternalGetSet::GetConsoleOutputCP() const
+// - <none>
+void ConhostInternalGetSet::ResetCodePage()
+{
+    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    LOG_IF_FAILED(DoSrvSetConsoleOutputCodePage(gci.DefaultOutputCP));
+    LOG_IF_FAILED(DoSrvSetConsoleInputCodePage(gci.DefaultCP));
+}
+
+// Routine Description:
+// - Gets the code page used for translating text when calling A versions of output functions.
+// Arguments:
+// - <none>
+// Return Value:
+// - the output code page of the console.
+unsigned int ConhostInternalGetSet::GetOutputCodePage() const
 {
     return ServiceLocator::LocateGlobals().getConsoleInformation().OutputCP;
+}
+
+// Routine Description:
+// - Gets the code page used for translating text when calling A versions of input functions.
+// Arguments:
+// - <none>
+// Return Value:
+// - the input code page of the console.
+unsigned int ConhostInternalGetSet::GetInputCodePage() const
+{
+    return ServiceLocator::LocateGlobals().getConsoleInformation().CP;
 }
 
 // Routine Description:
@@ -261,7 +280,7 @@ unsigned int ConhostInternalGetSet::GetConsoleOutputCP() const
 // - content - the text to be copied.
 // Return Value:
 // - <none>
-void ConhostInternalGetSet::CopyToClipboard(const std::wstring_view /*content*/)
+void ConhostInternalGetSet::CopyToClipboard(const wil::zwstring_view /*content*/)
 {
     // TODO
 }
@@ -298,11 +317,17 @@ void ConhostInternalGetSet::SetWorkingDirectory(const std::wstring_view /*uri*/)
 // - true if successful. false otherwise.
 void ConhostInternalGetSet::PlayMidiNote(const int noteNumber, const int velocity, const std::chrono::microseconds duration)
 {
+    const auto window = ServiceLocator::LocateConsoleWindow();
+    if (!window)
+    {
+        return;
+    }
+
     // Unlock the console, so the UI doesn't hang while we're busy.
     UnlockConsole();
 
     // This call will block for the duration, unless shutdown early.
-    const auto windowHandle = ServiceLocator::LocateConsoleWindow()->GetWindowHandle();
+    const auto windowHandle = window->GetWindowHandle();
     auto& midiAudio = ServiceLocator::LocateGlobals().getConsoleInformation().GetMidiAudio();
     midiAudio.PlayNote(windowHandle, noteNumber, velocity, std::chrono::duration_cast<std::chrono::milliseconds>(duration));
 
@@ -340,7 +365,7 @@ bool ConhostInternalGetSet::ResizeWindow(const til::CoordType sColumns, const ti
     api->GetConsoleScreenBufferInfoExImpl(screenInfo, csbiex);
 
     const auto oldViewport = screenInfo.GetVirtualViewport();
-    auto newViewport = Viewport::FromDimensions(oldViewport.Origin(), sColumns, sRows);
+    auto newViewport = Viewport::FromDimensions(oldViewport.Origin(), { sColumns, sRows });
     // Always resize the width of the console
     csbiex.dwSize.X = gsl::narrow_cast<short>(sColumns);
     // Only set the screen buffer's height if it's currently less than
@@ -351,11 +376,9 @@ bool ConhostInternalGetSet::ResizeWindow(const til::CoordType sColumns, const ti
     }
 
     // If the cursor row is now past the bottom of the viewport, we'll have to
-    // move the viewport down to bring it back into view. However, we don't want
-    // to do this in pty mode, because the conpty resize operation is dependent
-    // on the viewport *not* being adjusted.
+    // move the viewport down to bring it back into view.
     const auto cursorOverflow = csbiex.dwCursorPosition.Y - newViewport.BottomInclusive();
-    if (cursorOverflow > 0 && !IsConsolePty())
+    if (cursorOverflow > 0)
     {
         newViewport = Viewport::Offset(newViewport, { 0, cursorOverflow });
     }
@@ -370,17 +393,6 @@ bool ConhostInternalGetSet::ResizeWindow(const til::CoordType sColumns, const ti
     THROW_IF_FAILED(api->SetConsoleScreenBufferInfoExImpl(screenInfo, csbiex));
     THROW_IF_FAILED(api->SetConsoleWindowInfoImpl(screenInfo, true, sri));
     return true;
-}
-
-// Routine Description:
-// - Checks if the console host is acting as a pty.
-// Arguments:
-// - <none>
-// Return Value:
-// - true if we're in pty mode.
-bool ConhostInternalGetSet::IsConsolePty() const
-{
-    return ServiceLocator::LocateGlobals().getConsoleInformation().IsInVtIoMode();
 }
 
 // Routine Description:
@@ -434,26 +446,11 @@ void ConhostInternalGetSet::NotifyBufferRotation(const int delta)
     }
 }
 
-void ConhostInternalGetSet::MarkPrompt(const ::ScrollMark& /*mark*/)
-{
-    // Not implemented for conhost.
-}
-
-void ConhostInternalGetSet::MarkCommandStart()
-{
-    // Not implemented for conhost.
-}
-
-void ConhostInternalGetSet::MarkOutputStart()
-{
-    // Not implemented for conhost.
-}
-
-void ConhostInternalGetSet::MarkCommandFinish(std::optional<unsigned int> /*error*/)
-{
-    // Not implemented for conhost.
-}
 void ConhostInternalGetSet::InvokeCompletions(std::wstring_view /*menuJson*/, unsigned int /*replaceLength*/)
+{
+    // Not implemented for conhost.
+}
+void ConhostInternalGetSet::SearchMissingCommand(std::wstring_view /*missingCommand*/)
 {
     // Not implemented for conhost.
 }

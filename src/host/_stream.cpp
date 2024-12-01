@@ -14,6 +14,7 @@
 #include "dbcs.h"
 #include "handle.h"
 #include "misc.h"
+#include "VtIo.hpp"
 
 #include "../types/inc/convert.hpp"
 #include "../types/inc/GlyphWidth.hpp"
@@ -21,12 +22,14 @@
 
 #include "../interactivity/inc/ServiceLocator.hpp"
 
-#pragma hdrstop
 using namespace Microsoft::Console::Types;
+using namespace Microsoft::Console::VirtualTerminal;
 using Microsoft::Console::Interactivity::ServiceLocator;
-using Microsoft::Console::VirtualTerminal::StateMachine;
-// Used by WriteCharsLegacy.
-#define IS_GLYPH_CHAR(wch) (((wch) >= L' ') && ((wch) != 0x007F))
+
+constexpr bool controlCharPredicate(wchar_t wch)
+{
+    return wch < L' ' || wch == 0x007F;
+}
 
 // Routine Description:
 // - This routine updates the cursor position.  Its input is the non-special
@@ -39,7 +42,7 @@ using Microsoft::Console::VirtualTerminal::StateMachine;
 // - coordCursor - New location of cursor.
 // - fKeepCursorVisible - TRUE if changing window origin desirable when hit right edge
 // Return Value:
-static void AdjustCursorPosition(SCREEN_INFORMATION& screenInfo, _In_ til::point coordCursor, const bool interactive, _Inout_opt_ til::CoordType* psScrollY)
+static void AdjustCursorPosition(SCREEN_INFORMATION& screenInfo, _In_ til::point coordCursor, _Inout_opt_ til::CoordType* psScrollY)
 {
     const auto bufferSize = screenInfo.GetBufferSize().Dimensions();
     if (coordCursor.x < 0)
@@ -70,42 +73,19 @@ static void AdjustCursorPosition(SCREEN_INFORMATION& screenInfo, _In_ til::point
 
     if (coordCursor.y >= bufferSize.height)
     {
-        const auto vtIo = ServiceLocator::LocateGlobals().getConsoleInformation().GetVtIo();
-        const auto renderer = ServiceLocator::LocateGlobals().pRender;
-        const auto needsConPTYWorkaround = interactive && vtIo->IsUsingVt();
         auto& buffer = screenInfo.GetTextBuffer();
-        const auto isActiveBuffer = buffer.IsActiveBuffer();
+        buffer.IncrementCircularBuffer(buffer.GetCurrentAttributes());
 
-        // ConPTY translates scrolling into newlines. We don't want that during cooked reads (= "cmd.exe prompts")
-        // because the entire prompt is supposed to fit into the VT viewport, with no scrollback. If we didn't do that,
-        // any prompt larger than the viewport will cause >1 lines to be added to scrollback, even if typing backspaces.
-        // You can test this by removing this branch, launch Windows Terminal, and fill the entire viewport with text in cmd.exe.
-        if (needsConPTYWorkaround)
+        if (buffer.IsActiveBuffer())
         {
-            buffer.SetAsActiveBuffer(false);
-            buffer.IncrementCircularBuffer(buffer.GetCurrentAttributes());
-            buffer.SetAsActiveBuffer(isActiveBuffer);
-
-            if (isActiveBuffer && renderer)
+            if (const auto notifier = ServiceLocator::LocateAccessibilityNotifier())
             {
-                renderer->TriggerRedrawAll();
+                notifier->NotifyConsoleUpdateScrollEvent(0, -1);
             }
-        }
-        else
-        {
-            buffer.IncrementCircularBuffer(buffer.GetCurrentAttributes());
-
-            if (isActiveBuffer)
+            if (const auto renderer = ServiceLocator::LocateGlobals().pRender)
             {
-                if (const auto notifier = ServiceLocator::LocateAccessibilityNotifier())
-                {
-                    notifier->NotifyConsoleUpdateScrollEvent(0, -1);
-                }
-                if (renderer)
-                {
-                    static constexpr til::point delta{ 0, -1 };
-                    renderer->TriggerScroll(&delta);
-                }
+                static constexpr til::point delta{ 0, -1 };
+                renderer->TriggerScroll(&delta);
             }
         }
 
@@ -128,19 +108,16 @@ static void AdjustCursorPosition(SCREEN_INFORMATION& screenInfo, _In_ til::point
         LOG_IF_FAILED(screenInfo.SetViewportOrigin(false, WindowOrigin, true));
     }
 
-    if (interactive)
-    {
-        screenInfo.MakeCursorVisible(coordCursor);
-    }
-    LOG_IF_FAILED(screenInfo.SetCursorPosition(coordCursor, interactive));
+    LOG_IF_FAILED(screenInfo.SetCursorPosition(coordCursor, false));
 }
 
 // As the name implies, this writes text without processing its control characters.
-static void _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const std::wstring_view& text, const bool interactive, til::CoordType* psScrollY)
+static bool _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const std::wstring_view& text, til::CoordType* psScrollY)
 {
     const auto wrapAtEOL = WI_IsFlagSet(screenInfo.OutputMode, ENABLE_WRAP_AT_EOL_OUTPUT);
     const auto hasAccessibilityEventing = screenInfo.HasAccessibilityEventing();
     auto& textBuffer = screenInfo.GetTextBuffer();
+    bool wrapped = false;
 
     RowWriteState state{
         .text = text,
@@ -152,10 +129,11 @@ static void _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const s
         auto cursorPosition = textBuffer.GetCursor().GetPosition();
 
         state.columnBegin = cursorPosition.x;
-        textBuffer.Write(cursorPosition.y, textBuffer.GetCurrentAttributes(), state);
+        textBuffer.Replace(cursorPosition.y, textBuffer.GetCurrentAttributes(), state);
         cursorPosition.x = state.columnEnd;
+        wrapped = wrapAtEOL && state.columnEnd >= state.columnLimit;
 
-        if (wrapAtEOL && state.columnEnd >= state.columnLimit)
+        if (wrapped)
         {
             textBuffer.SetWrapForced(cursorPosition.y, true);
         }
@@ -165,29 +143,33 @@ static void _writeCharsLegacyUnprocessed(SCREEN_INFORMATION& screenInfo, const s
             screenInfo.NotifyAccessibilityEventing(state.columnBegin, cursorPosition.y, state.columnEnd - 1, cursorPosition.y);
         }
 
-        AdjustCursorPosition(screenInfo, cursorPosition, interactive, psScrollY);
+        AdjustCursorPosition(screenInfo, cursorPosition, psScrollY);
     }
+
+    return wrapped;
 }
 
 // This routine writes a string to the screen while handling control characters.
 // `interactive` exists for COOKED_READ_DATA which uses it to transform control characters into visible text like "^X".
 // Similarly, `psScrollY` is also used by it to track whether the underlying buffer circled. It requires this information to know where the input line moved to.
-void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& text, const bool interactive, til::CoordType* psScrollY)
+void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& text, til::CoordType* psScrollY)
 {
     static constexpr wchar_t tabSpaces[8]{ L' ', L' ', L' ', L' ', L' ', L' ', L' ', L' ' };
 
     auto& textBuffer = screenInfo.GetTextBuffer();
+    const auto width = textBuffer.GetSize().Width();
     auto& cursor = textBuffer.GetCursor();
     const auto wrapAtEOL = WI_IsFlagSet(screenInfo.OutputMode, ENABLE_WRAP_AT_EOL_OUTPUT);
-    auto it = text.begin();
+    const auto beg = text.begin();
     const auto end = text.end();
+    auto it = beg;
 
-    // In VT mode, when you have a 120-column terminal you can write 120 columns without the cursor wrapping.
-    // Whenever the cursor is in that 120th column IsDelayedEOLWrap() will return true. I'm not sure why the VT parts
-    // of the code base store this as a boolean. It's also unclear why we handle this here. The intention is likely
-    // so that when we exit VT mode and receive a write a potentially stored delayed wrap would still be handled.
-    // The way this code does it however isn't correct since it handles it like the old console APIs would and
-    // so writing a newline while being delay wrapped will print 2 newlines.
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    auto writer = gci.GetVtWriterForBuffer(&screenInfo);
+
+    // If we enter this if condition, then someone wrote text in VT mode and now switched to non-VT mode.
+    // Since the Console APIs don't support delayed EOL wrapping, we need to first put the cursor back
+    // to a position that the Console APIs expect (= not delayed).
     if (cursor.IsDelayedEOLWrap() && wrapAtEOL)
     {
         auto pos = cursor.GetPosition();
@@ -197,108 +179,222 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
         {
             pos.x = 0;
             pos.y++;
-            AdjustCursorPosition(screenInfo, pos, interactive, psScrollY);
+            AdjustCursorPosition(screenInfo, pos, psScrollY);
+
+            if (writer)
+            {
+                writer.WriteUTF8("\r\n");
+            }
         }
     }
 
     // If ENABLE_PROCESSED_OUTPUT is set we search for C0 control characters and handle them like backspace, tab, etc.
-    // If it's not set, we can just straight up give everything to _writeCharsLegacyUnprocessed.
+    // If it's not set, we can just straight up give everything to WriteCharsLegacyUnprocessed.
     if (WI_IsFlagClear(screenInfo.OutputMode, ENABLE_PROCESSED_OUTPUT))
     {
-        _writeCharsLegacyUnprocessed(screenInfo, { it, end }, interactive, psScrollY);
-        it = end;
+        const auto lastCharWrapped = _writeCharsLegacyUnprocessed(screenInfo, text, psScrollY);
+
+        if (writer)
+        {
+            // We're asked to produce VT output, but also to behave as if these control characters aren't control characters.
+            // So, to make it work, we simply replace all the control characters with whitespace.
+            writer.WriteUTF16StripControlChars(text);
+            if (lastCharWrapped)
+            {
+                writer.WriteUTF8("\r\n");
+            }
+            writer.Submit();
+        }
+
+        return;
     }
 
     while (it != end)
     {
-        const auto nextControlChar = std::find_if(it, end, [](const auto& wch) { return !IS_GLYPH_CHAR(wch); });
+        const auto nextControlChar = std::find_if(it, end, controlCharPredicate);
         if (nextControlChar != it)
         {
-            _writeCharsLegacyUnprocessed(screenInfo, { it, nextControlChar }, interactive, psScrollY);
+            const std::wstring_view chunk{ it, nextControlChar };
+            const auto lastCharWrapped = _writeCharsLegacyUnprocessed(screenInfo, chunk, psScrollY);
             it = nextControlChar;
+
+            if (writer)
+            {
+                writer.WriteUTF16(chunk);
+                if (lastCharWrapped)
+                {
+                    writer.WriteUTF8("\r\n");
+                }
+            }
         }
 
-        for (; it != end && !IS_GLYPH_CHAR(*it); ++it)
+        if (it == end)
         {
-            switch (*it)
+            break;
+        }
+
+        do
+        {
+            auto wch = *it;
+            auto lastCharWrapped = false;
+
+            switch (wch)
             {
             case UNICODE_NULL:
-                if (interactive)
-                {
-                    break;
-                }
-                _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], 1 }, interactive, psScrollY);
-                continue;
+            {
+                lastCharWrapped = _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], 1 }, psScrollY);
+                wch = L' ';
+                break;
+            }
             case UNICODE_BELL:
-                if (interactive)
-                {
-                    break;
-                }
+            {
                 std::ignore = screenInfo.SendNotifyBeep();
-                continue;
+                break;
+            }
             case UNICODE_BACKSPACE:
             {
-                // Backspace handling for interactive mode should happen in COOKED_READ_DATA
-                // where it has full control over the text and can delete it directly.
-                // Otherwise handling backspacing tabs/whitespace can turn up complex and bug-prone.
-                assert(!interactive);
                 auto pos = cursor.GetPosition();
                 pos.x = textBuffer.GetRowByOffset(pos.y).NavigateToPrevious(pos.x);
-                AdjustCursorPosition(screenInfo, pos, interactive, psScrollY);
-                continue;
+                AdjustCursorPosition(screenInfo, pos, psScrollY);
+                break;
             }
             case UNICODE_TAB:
             {
                 const auto pos = cursor.GetPosition();
-                const auto tabCount = gsl::narrow_cast<size_t>(8 - (pos.x & 7));
-                _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], tabCount }, interactive, psScrollY);
-                continue;
+                const auto remaining = width - pos.x;
+                const auto tabCount = gsl::narrow_cast<size_t>(std::min(remaining, 8 - (pos.x & 7)));
+                lastCharWrapped = _writeCharsLegacyUnprocessed(screenInfo, { &tabSpaces[0], tabCount }, psScrollY);
+                break;
             }
             case UNICODE_LINEFEED:
             {
                 auto pos = cursor.GetPosition();
-                if (WI_IsFlagClear(screenInfo.OutputMode, DISABLE_NEWLINE_AUTO_RETURN))
+                if (WI_IsFlagClear(screenInfo.OutputMode, DISABLE_NEWLINE_AUTO_RETURN) && pos.x != 0)
                 {
                     pos.x = 0;
+                    // This causes the current \n to be replaced with a \r\n in the ConPTY VT output.
+                    wch = 0;
+                    lastCharWrapped = true;
                 }
 
                 textBuffer.GetMutableRowByOffset(pos.y).SetWrapForced(false);
                 pos.y = pos.y + 1;
-                AdjustCursorPosition(screenInfo, pos, interactive, psScrollY);
-                continue;
+                AdjustCursorPosition(screenInfo, pos, psScrollY);
+                break;
             }
             case UNICODE_CARRIAGERETURN:
             {
                 auto pos = cursor.GetPosition();
                 pos.x = 0;
-                AdjustCursorPosition(screenInfo, pos, interactive, psScrollY);
-                continue;
-            }
-            default:
+                AdjustCursorPosition(screenInfo, pos, psScrollY);
                 break;
             }
-
-            // In the interactive mode we replace C0 control characters (0x00-0x1f) with ASCII representations like ^C (= 0x03).
-            if (interactive && *it < L' ')
-            {
-                const wchar_t wchs[2]{ L'^', static_cast<wchar_t>(*it + L'@') };
-                _writeCharsLegacyUnprocessed(screenInfo, { &wchs[0], 2 }, interactive, psScrollY);
-            }
-            else
+            default:
             {
                 // As a special favor to incompetent apps that attempt to display control chars,
                 // convert to corresponding OEM Glyph Chars
                 const auto cp = ServiceLocator::LocateGlobals().getConsoleInformation().OutputCP;
-                const auto ch = gsl::narrow_cast<char>(*it);
-                wchar_t wch = 0;
+                const auto ch = gsl::narrow_cast<char>(wch);
                 const auto result = MultiByteToWideChar(cp, MB_USEGLYPHCHARS, &ch, 1, &wch, 1);
-                if (result == 1)
+                if (result != 1)
                 {
-                    _writeCharsLegacyUnprocessed(screenInfo, { &wch, 1 }, interactive, psScrollY);
+                    wch = 0;
+                }
+                if (wch)
+                {
+                    lastCharWrapped = _writeCharsLegacyUnprocessed(screenInfo, { &wch, 1 }, psScrollY);
+                }
+                break;
+            }
+            }
+
+            if (writer)
+            {
+                if (wch)
+                {
+                    writer.WriteUCS2(wch);
+                }
+                if (lastCharWrapped)
+                {
+                    writer.WriteUTF8("\r\n");
                 }
             }
-        }
+
+            ++it;
+        } while (it != end && controlCharPredicate(*it));
     }
+
+    if (writer)
+    {
+        writer.Submit();
+    }
+}
+
+// This is the main entrypoint for conhost to write VT to the buffer.
+// This wrapper around StateMachine exists so that we can add the necessary ConPTY transformations.
+void WriteCharsVT(SCREEN_INFORMATION& screenInfo, const std::wstring_view& str)
+{
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    auto& stateMachine = screenInfo.GetStateMachine();
+    // If the given screenInfo is the alternate screen buffer, disabling the alternate screen buffer in this
+    // VT payload will cause the pointer to be invalidated. We thus need to get all the information we need now.
+    const auto disableNewlineTranslation = WI_IsFlagSet(screenInfo.OutputMode, DISABLE_NEWLINE_AUTO_RETURN);
+    // When switch between the main and alt-buffer SCREEN_INFORMATION::GetActiveBuffer()
+    // may change, so get the VtIo reference now, just in case.
+    auto writer = gci.GetVtWriterForBuffer(&screenInfo);
+
+    stateMachine.ProcessString(str);
+
+    if (writer)
+    {
+        const auto& injections = stateMachine.GetInjections();
+        size_t offset = 0;
+
+        // DISABLE_NEWLINE_AUTO_RETURN not being set is equivalent to a LF -> CRLF translation.
+        const auto write = [&](size_t beg, size_t end) {
+            const auto chunk = til::safe_slice_abs(str, beg, end);
+            if (disableNewlineTranslation)
+            {
+                writer.WriteUTF16(chunk);
+            }
+            else
+            {
+                writer.WriteUTF16TranslateCRLF(chunk);
+            }
+        };
+
+        // When we encounter something like a RIS (hard reset), we must re-enable
+        // modes that we rely on (like the Win32 Input Mode). To do this, the VT
+        // parser tells us the positions of any such relevant VT sequences.
+        for (const auto& injection : injections)
+        {
+            write(offset, injection.offset);
+            offset = injection.offset;
+
+            static constexpr std::array<std::string_view, 3> mapping{ {
+                { "\x1b[?1004h\x1b[?9001h" }, // RIS: Focus Event Mode + Win32 Input Mode
+                { "\x1b[?1004h" }, // DECSET_FOCUS: Focus Event Mode
+                { "\x1b[?9001h" }, // Win32 Input Mode
+            } };
+            static_assert(static_cast<size_t>(InjectionType::Count) == mapping.size(), "you need to update the mapping array");
+
+            writer.WriteUTF8(mapping[static_cast<size_t>(injection.type)]);
+        }
+
+        write(offset, std::wstring_view::npos);
+        writer.Submit();
+    }
+}
+
+// Erases all contents of the given screenInfo, including the current screen and scrollback.
+void WriteClearScreen(SCREEN_INFORMATION& screenInfo)
+{
+    WriteCharsVT(
+        screenInfo,
+        L"\x1b[H" // CUP to home
+        L"\x1b[2J" // Erase in Display: clear the screen
+        L"\x1b[3J" // Erase in Display: clear the scrollback buffer
+    );
 }
 
 // Routine Description:
@@ -319,43 +415,28 @@ void WriteCharsLegacy(SCREEN_INFORMATION& screenInfo, const std::wstring_view& t
 [[nodiscard]] NTSTATUS DoWriteConsole(_In_reads_bytes_(*pcbBuffer) PCWCHAR pwchBuffer,
                                       _Inout_ size_t* const pcbBuffer,
                                       SCREEN_INFORMATION& screenInfo,
-                                      bool requiresVtQuirk,
                                       std::unique_ptr<WriteData>& waiter)
 try
 {
-    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
     if (WI_IsAnyFlagSet(gci.Flags, (CONSOLE_SUSPENDED | CONSOLE_SELECTING | CONSOLE_SCROLLBAR_TRACKING)))
     {
         waiter = std::make_unique<WriteData>(screenInfo,
                                              pwchBuffer,
                                              *pcbBuffer,
-                                             gci.OutputCP,
-                                             requiresVtQuirk);
+                                             gci.OutputCP);
         return CONSOLE_STATUS_WAIT;
-    }
-
-    auto restoreVtQuirk{
-        wil::scope_exit([&]() { screenInfo.ResetIgnoreLegacyEquivalentVTAttributes(); })
-    };
-
-    if (requiresVtQuirk)
-    {
-        screenInfo.SetIgnoreLegacyEquivalentVTAttributes();
-    }
-    else
-    {
-        restoreVtQuirk.release();
     }
 
     const std::wstring_view str{ pwchBuffer, *pcbBuffer / sizeof(WCHAR) };
 
     if (WI_IsAnyFlagClear(screenInfo.OutputMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT))
     {
-        WriteCharsLegacy(screenInfo, str, false, nullptr);
+        WriteCharsLegacy(screenInfo, str, nullptr);
     }
     else
     {
-        screenInfo.GetStateMachine().ProcessString(str);
+        WriteCharsVT(screenInfo, str);
     }
 
     return STATUS_SUCCESS;
@@ -379,7 +460,6 @@ NT_CATCH_RETURN()
 [[nodiscard]] HRESULT WriteConsoleWImplHelper(IConsoleOutputObject& context,
                                               const std::wstring_view buffer,
                                               size_t& read,
-                                              bool requiresVtQuirk,
                                               std::unique_ptr<WriteData>& waiter) noexcept
 {
     try
@@ -392,7 +472,7 @@ NT_CATCH_RETURN()
         size_t cbTextBufferLength;
         RETURN_IF_FAILED(SizeTMult(buffer.size(), sizeof(wchar_t), &cbTextBufferLength));
 
-        auto Status = DoWriteConsole(const_cast<wchar_t*>(buffer.data()), &cbTextBufferLength, context, requiresVtQuirk, waiter);
+        auto Status = DoWriteConsole(const_cast<wchar_t*>(buffer.data()), &cbTextBufferLength, context, waiter);
 
         // Convert back from bytes to characters for the resulting string length written.
         read = cbTextBufferLength / sizeof(wchar_t);
@@ -425,7 +505,6 @@ NT_CATCH_RETURN()
 [[nodiscard]] HRESULT ApiRoutines::WriteConsoleAImpl(IConsoleOutputObject& context,
                                                      const std::string_view buffer,
                                                      size_t& read,
-                                                     bool requiresVtQuirk,
                                                      std::unique_ptr<IWaitRoutine>& waiter) noexcept
 {
     try
@@ -537,7 +616,7 @@ NT_CATCH_RETURN()
 
         // Make the W version of the call
         size_t wcBufferWritten{};
-        const auto hr{ WriteConsoleWImplHelper(screenInfo, wstr, wcBufferWritten, requiresVtQuirk, writeDataWaiter) };
+        const auto hr{ WriteConsoleWImplHelper(screenInfo, wstr, wcBufferWritten, writeDataWaiter) };
 
         // If there is no waiter, process the byte count now.
         if (nullptr == writeDataWaiter.get())
@@ -615,7 +694,6 @@ NT_CATCH_RETURN()
 [[nodiscard]] HRESULT ApiRoutines::WriteConsoleWImpl(IConsoleOutputObject& context,
                                                      const std::wstring_view buffer,
                                                      size_t& read,
-                                                     bool requiresVtQuirk,
                                                      std::unique_ptr<IWaitRoutine>& waiter) noexcept
 {
     try
@@ -624,7 +702,7 @@ NT_CATCH_RETURN()
         auto unlock = wil::scope_exit([&] { UnlockConsole(); });
 
         std::unique_ptr<WriteData> writeDataWaiter;
-        RETURN_IF_FAILED(WriteConsoleWImplHelper(context.GetActiveBuffer(), buffer, read, requiresVtQuirk, writeDataWaiter));
+        RETURN_IF_FAILED(WriteConsoleWImplHelper(context.GetActiveBuffer(), buffer, read, writeDataWaiter));
 
         // Transfer specific waiter pointer into the generic interface wrapper.
         waiter.reset(writeDataWaiter.release());

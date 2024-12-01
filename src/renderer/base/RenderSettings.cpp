@@ -20,11 +20,35 @@ RenderSettings::RenderSettings() noexcept
     SetColorTableEntry(TextColor::FRAME_FOREGROUND, INVALID_COLOR);
     SetColorTableEntry(TextColor::FRAME_BACKGROUND, INVALID_COLOR);
     SetColorTableEntry(TextColor::CURSOR_COLOR, INVALID_COLOR);
+    SetColorTableEntry(TextColor::SELECTION_BACKGROUND, INVALID_COLOR);
 
     SetColorAliasIndex(ColorAlias::DefaultForeground, TextColor::DARK_WHITE);
     SetColorAliasIndex(ColorAlias::DefaultBackground, TextColor::DARK_BLACK);
     SetColorAliasIndex(ColorAlias::FrameForeground, TextColor::FRAME_FOREGROUND);
     SetColorAliasIndex(ColorAlias::FrameBackground, TextColor::FRAME_BACKGROUND);
+
+    SaveDefaultSettings();
+}
+
+// Routine Description:
+// - Saves the current color table and color aliases as the default values, so
+//   we can later restore them when a hard reset (RIS) is requested.
+void RenderSettings::SaveDefaultSettings() noexcept
+{
+    _defaultColorTable = _colorTable;
+    _defaultColorAliasIndices = _colorAliasIndices;
+}
+
+// Routine Description:
+// - Resets the render settings to their default values. which is typically
+//   what they were set to at startup.
+void RenderSettings::RestoreDefaultSettings() noexcept
+{
+    _colorTable = _defaultColorTable;
+    _colorAliasIndices = _defaultColorAliasIndices;
+    // For now, DECSCNM is the only render mode we need to reset. The others are
+    // all user preferences that can't be changed programmatically.
+    _renderMode.reset(Mode::ScreenReversed);
 }
 
 // Routine Description:
@@ -213,12 +237,53 @@ std::pair<COLORREF, COLORREF> RenderSettings::GetAttributeColorsWithAlpha(const 
 }
 
 // Routine Description:
+// - Calculates the RGB underline color of a given text attribute, using the
+//   current color table configuration and active render settings.
+// - Returns the current foreground color when the underline color isn't set.
+// Arguments:
+// - attr - The TextAttribute to retrieve the underline color from.
+// Return Value:
+// - The color value of the attribute's underline.
+COLORREF RenderSettings::GetAttributeUnderlineColor(const TextAttribute& attr) const noexcept
+{
+    const auto [fg, bg] = GetAttributeColors(attr);
+    const auto ulTextColor = attr.GetUnderlineColor();
+    if (ulTextColor.IsDefault())
+    {
+        return fg;
+    }
+
+    const auto defaultUlIndex = GetColorAliasIndex(ColorAlias::DefaultForeground);
+    auto ul = ulTextColor.GetColor(_colorTable, defaultUlIndex, true);
+    if (attr.IsInvisible())
+    {
+        ul = bg;
+    }
+
+    // We intentionally aren't _only_ checking for attr.IsInvisible here, because we also want to
+    // catch the cases where the ul was intentionally set to be the same as the bg. In either case,
+    // don't adjust the underline color.
+    if constexpr (Feature_AdjustIndistinguishableText::IsEnabled())
+    {
+        if (
+            ul != bg &&
+            (_renderMode.test(Mode::AlwaysDistinguishableColors) ||
+             (_renderMode.test(Mode::IndexedDistinguishableColors) && ulTextColor.IsDefaultOrLegacy() && attr.GetBackground().IsDefaultOrLegacy())))
+        {
+            ul = ColorFix::GetPerceivableColor(ul, bg, 0.5f * 0.5f);
+        }
+    }
+
+    return ul;
+}
+
+// Routine Description:
 // - Increments the position in the blink cycle, toggling the blink rendition
 //   state on every second call, potentially triggering a redraw of the given
 //   renderer if there are blinking cells currently in view.
 // Arguments:
 // - renderer: the renderer that will be redrawn.
-void RenderSettings::ToggleBlinkRendition(Renderer& renderer) noexcept
+void RenderSettings::ToggleBlinkRendition(Renderer* renderer) noexcept
 try
 {
     if (GetRenderMode(Mode::BlinkAllowed))
@@ -236,7 +301,10 @@ try
             // We reset the _blinkIsInUse flag before redrawing, so we can
             // get a fresh assessment of the current blink attribute usage.
             _blinkIsInUse = false;
-            renderer.TriggerRedrawAll();
+            if (renderer)
+            {
+                renderer->TriggerRedrawAll();
+            }
         }
     }
 }

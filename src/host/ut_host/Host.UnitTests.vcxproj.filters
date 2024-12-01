@@ -21,9 +21,6 @@
     <ClCompile Include="ConsoleArgumentsTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="DbcsTests.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="ScreenBufferTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -37,9 +34,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\precomp.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Utf8ToWideCharParserTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="InitTests.cpp">
@@ -60,9 +54,6 @@
     <ClCompile Include="VtIoTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="VtRendererTests.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="AliasTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -70,9 +61,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="HistoryTests.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="CodepointWidthDetectorTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="TextBufferIteratorTests.cpp">
@@ -85,9 +73,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ObjectTests.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ConptyOutputTests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

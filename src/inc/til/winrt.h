@@ -8,12 +8,12 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
     template<typename T>
     struct property
     {
-        explicit constexpr property(auto&&... args) :
+        explicit constexpr property(auto&&... args) noexcept(std::is_nothrow_constructible_v<T, decltype(args)...>) :
             _value{ std::forward<decltype(args)>(args)... } {}
 
         property& operator=(const property& other) = default;
 
-        T operator()() const noexcept
+        T operator()() const noexcept(std::is_nothrow_copy_constructible<T>::value)
         {
             return _value;
         }
@@ -63,7 +63,7 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
         event<ArgsT>() = default;
         winrt::event_token operator()(const ArgsT& handler) { return _handlers.add(handler); }
         void operator()(const winrt::event_token& token) { _handlers.remove(token); }
-        operator bool() const noexcept { return _handlers; }
+        operator bool() const noexcept { return bool(_handlers); }
         template<typename... Arg>
         void raise(auto&&... args)
         {
@@ -72,13 +72,13 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
         winrt::event<ArgsT> _handlers;
     };
 
-    template<typename SenderT, typename ArgsT>
+    template<typename SenderT = winrt::Windows::Foundation::IInspectable, typename ArgsT = winrt::Windows::Foundation::IInspectable>
     struct typed_event
     {
         typed_event<SenderT, ArgsT>() = default;
         winrt::event_token operator()(const winrt::Windows::Foundation::TypedEventHandler<SenderT, ArgsT>& handler) { return _handlers.add(handler); }
         void operator()(const winrt::event_token& token) { _handlers.remove(token); }
-        operator bool() const noexcept { return _handlers; }
+        operator bool() const noexcept { return bool(_handlers); }
         template<typename... Arg>
         void raise(Arg const&... args)
         {
@@ -87,10 +87,9 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
         winrt::event<winrt::Windows::Foundation::TypedEventHandler<SenderT, ArgsT>> _handlers;
     };
 #endif
-#ifdef WINRT_Windows_UI_Xaml_DataH
+#ifdef WINRT_Windows_UI_Xaml_Data_H
 
-    using property_changed_event = event<winrt::Windows::UI::Xaml::Data::PropertyChangedEventHandler>;
-
+    using property_changed_event = til::event<winrt::Windows::UI::Xaml::Data::PropertyChangedEventHandler>;
     // Making a til::observable_property unfortunately doesn't seem feasible.
     // It's gonna just result in more macros, which no one wants.
     //
@@ -110,4 +109,24 @@ namespace til // Terminal Implementation Library. Also: "Today I Learned"
     //     Which is just silly
 
 #endif
+
+    struct transparent_hstring_hash
+    {
+        using is_transparent = void;
+
+        size_t operator()(const auto& hstr) const noexcept
+        {
+            return std::hash<std::wstring_view>{}(hstr);
+        }
+    };
+
+    struct transparent_hstring_equal_to
+    {
+        using is_transparent = void;
+
+        bool operator()(const auto& lhs, const auto& rhs) const noexcept
+        {
+            return lhs == rhs;
+        }
+    };
 }

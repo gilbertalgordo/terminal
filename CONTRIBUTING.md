@@ -14,7 +14,7 @@ The point of doing all this work in public is to ensure that we are holding ours
 
 The team triages new issues several times a week. During triage, the team uses labels to categorize, manage, and drive the project workflow.
 
-We employ [a bot engine](https://github.com/microsoft/terminal/blob/main/doc/bot.md) to help us automate common processes within our workflow.
+We employ [a bot engine](./doc/bot.md) to help us automate common processes within our workflow.
 
 We drive the bot by tagging issues with specific labels which cause the bot engine to close issues, merge branches, etc. This bot engine helps us keep the repo clean by automating the process of notifying appropriate parties if/when information/follow-up is needed, and closing stale issues/PRs after reminders have remained unanswered for several days.
 
@@ -158,7 +158,7 @@ Once you've discussed your proposed feature/fix/etc. with a team member, and you
 
 ### Testing
 
-Testing is a key component in the development workflow. Both Windows Terminal and Windows Console use TAEF(the Test Authoring and Execution Framework) as the main framework for testing.
+Testing is a key component in the development workflow. Both Windows Terminal and Windows Console use TAEF (the Test Authoring and Execution Framework) as the main framework for testing.
 
 If your changes affect existing test cases, or you're working on brand new features and also the accompanying test cases, see [TAEF](./doc/TAEF.md) for more information about how to validate your work locally.
 

@@ -8,46 +8,63 @@
 
 using namespace Microsoft::Console::Types;
 
-bool Search::ResetIfStale(Microsoft::Console::Render::IRenderData& renderData)
+bool Search::IsStale(const Microsoft::Console::Render::IRenderData& renderData, const std::wstring_view& needle, SearchFlag flags) const noexcept
 {
-    return ResetIfStale(renderData,
-                        _needle,
-                        _step == -1, // this is the opposite of the initializer below
-                        _caseInsensitive);
+    return _renderData != &renderData ||
+           _needle != needle ||
+           _flags != flags ||
+           _lastMutationId != renderData.GetTextBuffer().GetLastMutationId();
 }
 
-bool Search::ResetIfStale(Microsoft::Console::Render::IRenderData& renderData, const std::wstring_view& needle, bool reverse, bool caseInsensitive)
+void Search::Reset(Microsoft::Console::Render::IRenderData& renderData, const std::wstring_view& needle, SearchFlag flags, bool reverse)
 {
     const auto& textBuffer = renderData.GetTextBuffer();
-    const auto lastMutationId = textBuffer.GetLastMutationId();
-
-    if (_needle == needle &&
-        _reverse == reverse &&
-        _caseInsensitive == caseInsensitive &&
-        _lastMutationId == lastMutationId)
-    {
-        return false;
-    }
 
     _renderData = &renderData;
     _needle = needle;
-    _reverse = reverse;
-    _caseInsensitive = caseInsensitive;
-    _lastMutationId = lastMutationId;
+    _flags = flags;
+    _lastMutationId = textBuffer.GetLastMutationId();
 
-    _results = textBuffer.SearchText(needle, caseInsensitive);
+    auto result = textBuffer.SearchText(needle, _flags);
+    _ok = result.has_value();
+    _results = std::move(result).value_or(std::vector<til::point_span>{});
     _index = reverse ? gsl::narrow_cast<ptrdiff_t>(_results.size()) - 1 : 0;
     _step = reverse ? -1 : 1;
 
-    return true;
-}
-
-void Search::MovePastCurrentSelection()
-{
     if (_renderData->IsSelectionActive())
     {
-        MovePastPoint(_renderData->GetTextBuffer().ScreenToBufferPosition(_renderData->GetSelectionAnchor()));
+        MoveToPoint(_renderData->GetTextBuffer().ScreenToBufferPosition(_renderData->GetSelectionAnchor()));
     }
+    else if (const auto span = _renderData->GetSearchHighlightFocused())
+    {
+        MoveToPoint(_step > 0 ? span->start : span->end);
+    }
+}
+
+void Search::MoveToPoint(const til::point anchor) noexcept
+{
+    if (_results.empty())
+    {
+        return;
+    }
+
+    const auto count = gsl::narrow_cast<ptrdiff_t>(_results.size());
+    ptrdiff_t index = 0;
+
+    if (_step < 0)
+    {
+        for (index = count - 1; index >= 0 && til::at(_results, index).start > anchor; --index)
+        {
+        }
+    }
+    else
+    {
+        for (index = 0; index < count && til::at(_results, index).start < anchor; ++index)
+        {
+        }
+    }
+
+    _index = (index + count) % count;
 }
 
 void Search::MovePastPoint(const til::point anchor) noexcept
@@ -58,18 +75,17 @@ void Search::MovePastPoint(const til::point anchor) noexcept
     }
 
     const auto count = gsl::narrow_cast<ptrdiff_t>(_results.size());
-    const auto highestIndex = count - 1;
-    auto index = _reverse ? highestIndex : 0;
+    ptrdiff_t index = 0;
 
-    if (_reverse)
+    if (_step < 0)
     {
-        for (; index >= 0 && til::at(_results, index).start >= anchor; --index)
+        for (index = count - 1; index >= 0 && til::at(_results, index).start >= anchor; --index)
         {
         }
     }
     else
     {
-        for (; index <= highestIndex && til::at(_results, index).start <= anchor; ++index)
+        for (index = 0; index < count && til::at(_results, index).start <= anchor; ++index)
         {
         }
     }
@@ -77,8 +93,9 @@ void Search::MovePastPoint(const til::point anchor) noexcept
     _index = (index + count) % count;
 }
 
-void Search::FindNext() noexcept
+void Search::FindNext(bool reverse) noexcept
 {
+    _step = reverse ? -1 : 1;
     if (const auto count{ gsl::narrow_cast<ptrdiff_t>(_results.size()) })
     {
         _index = (_index + _step + count) % count;
@@ -111,6 +128,7 @@ bool Search::SelectCurrent() const
         return true;
     }
 
+    _renderData->ClearSelection();
     return false;
 }
 
@@ -119,7 +137,17 @@ const std::vector<til::point_span>& Search::Results() const noexcept
     return _results;
 }
 
-size_t Search::CurrentMatch() const noexcept
+std::vector<til::point_span>&& Search::ExtractResults() noexcept
+{
+    return std::move(_results);
+}
+
+ptrdiff_t Search::CurrentMatch() const noexcept
 {
     return _index;
+}
+
+bool Search::IsOk() const noexcept
+{
+    return _ok;
 }

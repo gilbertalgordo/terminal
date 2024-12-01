@@ -73,6 +73,8 @@ void IslandWindow::Refrigerate() noexcept
     // This pointer will get re-set in _warmInitialize
     SetWindowLongPtr(_window.get(), GWLP_USERDATA, 0);
 
+    _resetSystemMenu();
+
     _pfnCreateCallback = nullptr;
     _pfnSnapDimensionCallback = nullptr;
 
@@ -199,6 +201,8 @@ void IslandWindow::_HandleCreateWindow(const WPARAM, const LPARAM lParam) noexce
     UpdateWindow(_window.get());
 
     UpdateWindowIconForActiveMetrics(_window.get());
+
+    _currentSystemThemeIsDark = Theme::IsSystemInDarkTheme();
 }
 
 // Method Description:
@@ -224,6 +228,16 @@ LRESULT IslandWindow::_OnSizing(const WPARAM wParam, const LPARAM lParam)
 
     auto winRect = reinterpret_cast<LPRECT>(lParam);
 
+    // If we're the quake window, prevent resizing on all sides except the
+    // bottom. This also applies to resizing with the Alt+Space menu
+    if (IsQuakeWindow() && wParam != WMSZ_BOTTOM)
+    {
+        // Stuff our current window size into the lParam, and return true. This
+        // will tell User32 to use our current dimensions to resize to.
+        ::GetWindowRect(_window.get(), winRect);
+        return true;
+    }
+
     // Find nearest monitor.
     auto hmon = MonitorFromRect(winRect, MONITOR_DEFAULTTONEAREST);
 
@@ -235,36 +249,30 @@ LRESULT IslandWindow::_OnSizing(const WPARAM wParam, const LPARAM lParam)
     // bad parameters, which we won't have, so no big deal.
     LOG_IF_FAILED(GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &dpix, &dpiy));
 
-    const long minWidthScaled = minimumWidth * dpix / USER_DEFAULT_SCREEN_DPI;
-
     const auto nonClientSize = GetTotalNonClientExclusiveSize(dpix);
+    const auto dipPerPx = static_cast<float>(USER_DEFAULT_SCREEN_DPI) / static_cast<float>(dpix);
+    const auto pxPerDip = static_cast<float>(dpix) / static_cast<float>(USER_DEFAULT_SCREEN_DPI);
 
     auto clientWidth = winRect->right - winRect->left - nonClientSize.width;
-    clientWidth = std::max(minWidthScaled, clientWidth);
-
     auto clientHeight = winRect->bottom - winRect->top - nonClientSize.height;
-
-    // If we're the quake window, prevent resizing on all sides except the
-    // bottom. This also applies to resizing with the Alt+Space menu
-    if (IsQuakeWindow() && wParam != WMSZ_BOTTOM)
-    {
-        // Stuff our current window size into the lParam, and return true. This
-        // will tell User32 to use our current dimensions to resize to.
-        ::GetWindowRect(_window.get(), winRect);
-        return true;
-    }
 
     if (wParam != WMSZ_TOP && wParam != WMSZ_BOTTOM)
     {
         // If user has dragged anything but the top or bottom border (so e.g. left border,
         // top-right corner etc.), then this means that the width has changed. We thus ask to
         // adjust this new width so that terminal(s) is/are aligned to their character grid(s).
-        clientWidth = gsl::narrow_cast<decltype(clientWidth)>(_pfnSnapDimensionCallback(true, gsl::narrow_cast<float>(clientWidth)));
+        auto width = clientWidth * dipPerPx;
+        width = std::max(width, minimumWidth);
+        width = _pfnSnapDimensionCallback(true, width);
+        clientWidth = lroundf(width * pxPerDip);
     }
     if (wParam != WMSZ_LEFT && wParam != WMSZ_RIGHT)
     {
         // Analogous to above, but for height.
-        clientHeight = gsl::narrow_cast<decltype(clientHeight)>(_pfnSnapDimensionCallback(false, gsl::narrow_cast<float>(clientHeight)));
+        auto height = clientHeight * dipPerPx;
+        height = std::max(height, minimumHeight);
+        height = _pfnSnapDimensionCallback(false, height);
+        clientHeight = lroundf(height * pxPerDip);
     }
 
     // Now make the window rectangle match the calculated client width and height,
@@ -466,30 +474,16 @@ void IslandWindow::_OnGetMinMaxInfo(const WPARAM /*wParam*/, const LPARAM lParam
 
     // From now we use dpix for all computations (same as in _OnSizing).
     const auto nonClientSizeScaled = GetTotalNonClientExclusiveSize(dpix);
+    const auto pxPerDip = static_cast<float>(dpix) / static_cast<float>(USER_DEFAULT_SCREEN_DPI);
 
-    auto lpMinMaxInfo = reinterpret_cast<LPMINMAXINFO>(lParam);
-    lpMinMaxInfo->ptMinTrackSize.x = _calculateTotalSize(true, minimumWidth * dpix / USER_DEFAULT_SCREEN_DPI, nonClientSizeScaled.width);
-    lpMinMaxInfo->ptMinTrackSize.y = _calculateTotalSize(false, minimumHeight * dpiy / USER_DEFAULT_SCREEN_DPI, nonClientSizeScaled.height);
-}
-
-// Method Description:
-// - Helper function that calculates a single dimension value, given initialWindow and nonClientSizes
-// Arguments:
-// - isWidth: parameter to pass to SnapDimensionCallback.
-//   True if the method is invoked for width computation, false if for height.
-// - clientSize: the size of the client area (already)
-// - nonClientSizeScaled: the exclusive non-client size (already scaled)
-// Return Value:
-// - The total dimension
-long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize, const long nonClientSize)
-{
-    if (_pfnSnapDimensionCallback)
-    {
-        return gsl::narrow_cast<int>(_pfnSnapDimensionCallback(isWidth, gsl::narrow_cast<float>(clientSize)) + nonClientSize);
-    }
     // We might have been called in WM_CREATE, before we've initialized XAML or
     // our page. That's okay.
-    return clientSize + nonClientSize;
+    const auto width = _pfnSnapDimensionCallback(true, minimumWidth);
+    const auto height = _pfnSnapDimensionCallback(false, minimumHeight);
+
+    auto lpMinMaxInfo = reinterpret_cast<LPMINMAXINFO>(lParam);
+    lpMinMaxInfo->ptMinTrackSize.x = lroundf(width * pxPerDip) + nonClientSizeScaled.width;
+    lpMinMaxInfo->ptMinTrackSize.y = lroundf(height * pxPerDip) + nonClientSizeScaled.height;
 }
 
 [[nodiscard]] LRESULT IslandWindow::MessageHandler(UINT const message, WPARAM const wparam, LPARAM const lparam) noexcept
@@ -506,6 +500,15 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
         _HandleCreateWindow(wparam, lparam);
         return 0;
     }
+    case WM_ENABLE:
+    {
+        if (_interopWindowHandle != nullptr)
+        {
+            // send focus to the child window
+            SetFocus(_interopWindowHandle);
+        }
+        break;
+    }
     case WM_SETFOCUS:
     {
         if (_interopWindowHandle != nullptr)
@@ -520,7 +523,7 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
     {
         // wparam = 0 indicates the window was deactivated
         const bool activated = LOWORD(wparam) != 0;
-        _WindowActivatedHandlers(activated);
+        WindowActivated.raise(activated);
 
         if (_autoHideWindow && !activated)
         {
@@ -548,7 +551,7 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
     {
         // If we clicked in the titlebar, raise an event so the app host can
         // dispatch an appropriate event.
-        _DragRegionClickedHandlers();
+        DragRegionClicked.raise();
         break;
     }
     case WM_MENUCHAR:
@@ -566,13 +569,13 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
     {
         if (wparam == SIZE_RESTORED || wparam == SIZE_MAXIMIZED)
         {
-            _WindowVisibilityChangedHandlers(true);
-            _MaximizeChangedHandlers(wparam == SIZE_MAXIMIZED);
+            WindowVisibilityChanged.raise(true);
+            MaximizeChanged.raise(wparam == SIZE_MAXIMIZED);
         }
 
         if (wparam == SIZE_MINIMIZED)
         {
-            _WindowVisibilityChangedHandlers(false);
+            WindowVisibilityChanged.raise(false);
             if (_isQuakeWindow)
             {
                 ShowWindow(GetHandle(), SW_HIDE);
@@ -605,7 +608,7 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
     }
     case WM_MOVE:
     {
-        _WindowMovedHandlers();
+        WindowMoved.raise();
         break;
     }
     case WM_CLOSE:
@@ -613,7 +616,7 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
         // If the user wants to close the app by clicking 'X' button,
         // we hand off the close experience to the app layer. If all the tabs
         // are closed, the window will be closed as well.
-        _WindowCloseButtonClickedHandlers();
+        WindowCloseButtonClicked.raise();
         return 0;
     }
     case WM_MOUSEWHEEL:
@@ -642,12 +645,12 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
             const auto relative = eventPoint - origin;
             // Convert to logical scaling before raising the event.
             const auto scale = GetCurrentDpiScale();
-            const til::point real{ til::math::flooring, relative.x / scale, relative.y / scale };
+            const winrt::Windows::Foundation::Point real{ relative.x / scale, relative.y / scale };
 
             const auto wheelDelta = static_cast<short>(HIWORD(wparam));
 
             // Raise an event, so any listeners can handle the mouse wheel event manually.
-            _MouseScrolledHandlers(real, wheelDelta);
+            MouseScrolled.raise(real, wheelDelta);
             return 0;
         }
         CATCH_LOG();
@@ -717,12 +720,12 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
         auto highBits = wparam & 0xFFF0;
         if (highBits == SC_RESTORE || highBits == SC_MAXIMIZE)
         {
-            _MaximizeChangedHandlers(highBits == SC_MAXIMIZE);
+            MaximizeChanged.raise(highBits == SC_MAXIMIZE);
         }
 
         if (wparam == SC_RESTORE && _fullscreen)
         {
-            _ShouldExitFullscreenHandlers();
+            ShouldExitFullscreen.raise();
             return 0;
         }
         auto search = _systemMenuItems.find(LOWORD(wparam));
@@ -745,7 +748,16 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
             // themes, color schemes that might depend on the OS theme
             if (param == L"ImmersiveColorSet")
             {
-                _UpdateSettingsRequestedHandlers();
+                // GH#15732: Don't update the settings, unless the theme
+                // _actually_ changed. ImmersiveColorSet gets sent more often
+                // than just on a theme change. It notably gets sent when the PC
+                // is locked, or the UAC prompt opens.
+                auto isCurrentlyDark = Theme::IsSystemInDarkTheme();
+                if (isCurrentlyDark != _currentSystemThemeIsDark)
+                {
+                    _currentSystemThemeIsDark = isCurrentlyDark;
+                    UpdateSettingsRequested.raise();
+                }
             }
         }
         break;
@@ -784,7 +796,7 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
             TraceLoggingLevel(WINEVENT_LEVEL_VERBOSE),
             TraceLoggingKeyword(TIL_KEYWORD_TRACE));
 
-        _AutomaticShutdownRequestedHandlers();
+        AutomaticShutdownRequested.raise();
         return true;
     }
     }
@@ -1311,7 +1323,7 @@ void IslandWindow::_SetIsFullscreen(const bool fullscreenEnabled)
 // - toggleVisibility: controls how we should behave when already in the foreground.
 // Return Value:
 // - <none>
-winrt::fire_and_forget IslandWindow::SummonWindow(Remoting::SummonWindowBehavior args)
+safe_void_coroutine IslandWindow::SummonWindow(Remoting::SummonWindowBehavior args)
 {
     // On the foreground thread:
     co_await wil::resume_foreground(_rootGrid.Dispatcher());
@@ -1410,7 +1422,7 @@ void IslandWindow::_doSlideAnimation(const uint32_t dropdownDuration, const bool
     {
         const auto end = std::chrono::system_clock::now();
         const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        const auto dt = ::base::saturated_cast<double>(millis.count());
+        const auto dt = static_cast<double>(millis.count());
 
         if (dt > animationDuration)
         {
@@ -1904,6 +1916,12 @@ void IslandWindow::RemoveFromSystemMenu(const winrt::hstring& itemLabel)
         return;
     }
     _systemMenuItems.erase(it->first);
+}
+
+void IslandWindow::_resetSystemMenu()
+{
+    // GetSystemMenu(..., true) will revert the menu to the default state.
+    GetSystemMenu(_window.get(), TRUE);
 }
 
 void IslandWindow::UseDarkTheme(const bool v)

@@ -47,10 +47,6 @@
     <ClInclude Include="AddProfile.h">
       <DependentUpon>AddProfile.xaml</DependentUpon>
     </ClInclude>
-    <ClInclude Include="Converters.h">
-      <DependentUpon>Converters.idl</DependentUpon>
-      <SubType>Code</SubType>
-    </ClInclude>
     <ClInclude Include="EnumEntry.h">
       <DependentUpon>EnumEntry.idl</DependentUpon>
     </ClInclude>
@@ -68,6 +64,9 @@
     <ClInclude Include="Interaction.h">
       <DependentUpon>Interaction.xaml</DependentUpon>
     </ClInclude>
+    <ClInclude Include="Compatibility.h">
+      <DependentUpon>Compatibility.xaml</DependentUpon>
+    </ClInclude>
     <ClInclude Include="KeyChordListener.h">
       <DependentUpon>KeyChordListener.xaml</DependentUpon>
     </ClInclude>
@@ -80,6 +79,10 @@
     </ClInclude>
     <ClInclude Include="ProfileViewModel.h">
       <DependentUpon>ProfileViewModel.idl</DependentUpon>
+      <SubType>Code</SubType>
+    </ClInclude>
+    <ClInclude Include="ActionsViewModel.h">
+      <DependentUpon>ActionsViewModel.idl</DependentUpon>
       <SubType>Code</SubType>
     </ClInclude>
     <ClInclude Include="ColorSchemeViewModel.h">
@@ -110,12 +113,20 @@
       <DependentUpon>Profiles_Base.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClInclude>
+    <ClInclude Include="Profiles_Base_Orphaned.h">
+      <DependentUpon>Profiles_Base_Orphaned.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClInclude>
     <ClInclude Include="Profiles_Advanced.h">
       <DependentUpon>Profiles_Advanced.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClInclude>
     <ClInclude Include="Profiles_Appearance.h">
       <DependentUpon>Profiles_Appearance.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClInclude>
+    <ClInclude Include="Profiles_Terminal.h">
+      <DependentUpon>Profiles_Terminal.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClInclude>
     <ClInclude Include="Appearances.h">
@@ -154,6 +165,9 @@
     <Page Include="Interaction.xaml">
       <SubType>Designer</SubType>
     </Page>
+    <Page Include="Compatibility.xaml">
+      <SubType>Designer</SubType>
+    </Page>
     <Page Include="KeyChordListener.xaml">
       <SubType>Designer</SubType>
     </Page>
@@ -166,10 +180,16 @@
     <Page Include="Profiles_Base.xaml">
       <SubType>Designer</SubType>
     </Page>
+    <Page Include="Profiles_Base_Orphaned.xaml">
+      <SubType>Designer</SubType>
+    </Page>
     <Page Include="Profiles_Advanced.xaml">
       <SubType>Designer</SubType>
     </Page>
     <Page Include="Profiles_Appearance.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Profiles_Terminal.xaml">
       <SubType>Designer</SubType>
     </Page>
     <Page Include="Appearances.xaml">
@@ -190,10 +210,6 @@
     <ClCompile Include="AddProfile.cpp">
       <DependentUpon>AddProfile.xaml</DependentUpon>
     </ClCompile>
-    <ClCompile Include="Converters.cpp">
-      <DependentUpon>Converters.idl</DependentUpon>
-      <SubType>Code</SubType>
-    </ClCompile>
     <ClCompile Include="GlobalAppearance.cpp">
       <DependentUpon>GlobalAppearance.xaml</DependentUpon>
     </ClCompile>
@@ -207,6 +223,9 @@
     </ClCompile>
     <ClCompile Include="Interaction.cpp">
       <DependentUpon>Interaction.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="Compatibility.cpp">
+      <DependentUpon>Compatibility.xaml</DependentUpon>
     </ClCompile>
     <ClCompile Include="KeyChordListener.cpp">
       <DependentUpon>KeyChordListener.xaml</DependentUpon>
@@ -223,6 +242,10 @@
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
     <ClCompile Include="ProfileViewModel.cpp">
       <DependentUpon>ProfileViewModel.idl</DependentUpon>
+      <SubType>Code</SubType>
+    </ClCompile>
+    <ClCompile Include="ActionsViewModel.cpp">
+      <DependentUpon>ActionsViewModel.idl</DependentUpon>
       <SubType>Code</SubType>
     </ClCompile>
     <ClCompile Include="ColorSchemeViewModel.cpp">
@@ -253,12 +276,20 @@
       <DependentUpon>Profiles_Base.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClCompile>
+    <ClCompile Include="Profiles_Base_Orphaned.cpp">
+      <DependentUpon>Profiles_Base_Orphaned.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClCompile>
     <ClCompile Include="Profiles_Advanced.cpp">
       <DependentUpon>Profiles_Advanced.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClCompile>
     <ClCompile Include="Profiles_Appearance.cpp">
       <DependentUpon>Profiles_Appearance.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClCompile>
+    <ClCompile Include="Profiles_Terminal.cpp">
+      <DependentUpon>Profiles_Terminal.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClCompile>
     <ClCompile Include="Appearances.cpp">
@@ -286,7 +317,6 @@
       <DependentUpon>AddProfile.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
-    <Midl Include="Converters.idl" />
     <Midl Include="EnumEntry.idl" />
     <Midl Include="GlobalAppearance.idl">
       <DependentUpon>GlobalAppearance.xaml</DependentUpon>
@@ -312,6 +342,10 @@
       <DependentUpon>Interaction.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
+    <Midl Include="Compatibility.idl">
+      <DependentUpon>Compatibility.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Midl>
     <Midl Include="Rendering.idl">
       <DependentUpon>Rendering.xaml</DependentUpon>
       <SubType>Code</SubType>
@@ -320,6 +354,7 @@
       <DependentUpon>MainPage.xaml</DependentUpon>
     </Midl>
     <Midl Include="ProfileViewModel.idl" />
+    <Midl Include="ActionsViewModel.idl" />
     <Midl Include="ColorSchemeViewModel.idl" />
     <Midl Include="ColorSchemesPageViewModel.idl" />
     <Midl Include="RenderingViewModel.idl" />
@@ -330,12 +365,20 @@
       <DependentUpon>Profiles_Base.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
+    <Midl Include="Profiles_Base_Orphaned.idl">
+      <DependentUpon>Profiles_Base_Orphaned.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Midl>
     <Midl Include="Profiles_Advanced.idl">
       <DependentUpon>Profiles_Advanced.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
     <Midl Include="Profiles_Appearance.idl">
       <DependentUpon>Profiles_Appearance.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Midl>
+    <Midl Include="Profiles_Terminal.idl">
+      <DependentUpon>Profiles_Terminal.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
     <Midl Include="Appearances.idl">
@@ -367,6 +410,9 @@
     <ProjectReference Include="$(OpenConsoleDir)src\cascadia\WinRTUtils\WinRTUtils.vcxproj">
       <Project>{CA5CAD1A-039A-4929-BA2A-8BEB2E4106FE}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="$(OpenConsoleDir)src\cascadia\UIHelpers\UIHelpers.vcxproj">
+      <Project>{6515F03F-E56D-4DB4-B23D-AC4FB80DB36F}</Project>
     </ProjectReference>
     <ProjectReference Include="$(OpenConsoleDir)src\cascadia\TerminalConnection\TerminalConnection.vcxproj">
       <Private>false</Private>

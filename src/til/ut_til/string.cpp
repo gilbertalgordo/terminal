@@ -7,6 +7,25 @@ using namespace WEX::Common;
 using namespace WEX::Logging;
 using namespace WEX::TestExecution;
 
+template<>
+class WEX::TestExecution::VerifyOutputTraits<std::vector<std::wstring>>
+{
+public:
+    static WEX::Common::NoThrowString ToString(const std::vector<std::wstring>& vec)
+    {
+        WEX::Common::NoThrowString str;
+        str.Append(L"{ ");
+        for (size_t i = 0; i < vec.size(); ++i)
+        {
+            str.Append(i == 0 ? L"\"" : L", \"");
+            str.Append(vec[i].c_str());
+            str.Append(L"\"");
+        }
+        str.Append(L" }");
+        return str;
+    }
+};
+
 class StringTests
 {
     TEST_CLASS(StringTests);
@@ -53,9 +72,9 @@ class StringTests
         VERIFY_IS_TRUE(til::ends_with("0abc", "abc"));
     }
 
-    // Normally this would be the spot where you'd find a TEST_METHOD(to_ulong).
+    // Normally this would be the spot where you'd find a TEST_METHOD(parse_u64).
     // I didn't quite trust my coding skills and thus opted to use fuzz-testing.
-    // The below function was used to test to_ulong for unsafety and conformance with clang's strtoul.
+    // The below function was used to test parse_u64 for unsafety and conformance with clang's strtoul.
     // The test was run as:
     //   clang++ -fsanitize=address,undefined,fuzzer -std=c++17 file.cpp
     // and was run for 20min across 16 jobs in parallel.
@@ -93,7 +112,7 @@ class StringTests
             return 0;
         }
 
-        const auto actual = to_ulong({ wide_buffer, size });
+        const auto actual = parse_u64({ wide_buffer, size });
         if (expected != actual)
         {
             __builtin_trap();
@@ -128,46 +147,39 @@ class StringTests
         VERIFY_IS_TRUE(til::equals_insensitive_ascii("cOUnterStriKE", "COuntERStRike"));
     }
 
-    TEST_METHOD(prefix_split)
+    TEST_METHOD(split_iterator)
     {
-        {
-            std::string_view s{ "" };
-            VERIFY_ARE_EQUAL("", til::prefix_split(s, ""));
-            VERIFY_ARE_EQUAL("", s);
-        }
-        {
-            std::string_view s{ "" };
-            VERIFY_ARE_EQUAL("", til::prefix_split(s, " "));
-            VERIFY_ARE_EQUAL("", s);
-        }
-        {
-            std::string_view s{ " " };
-            VERIFY_ARE_EQUAL(" ", til::prefix_split(s, ""));
-            VERIFY_ARE_EQUAL("", s);
-        }
-        {
-            std::string_view s{ "foo" };
-            VERIFY_ARE_EQUAL("foo", til::prefix_split(s, ""));
-            VERIFY_ARE_EQUAL("", s);
-        }
-        {
-            std::string_view s{ "foo bar baz" };
-            VERIFY_ARE_EQUAL("foo", til::prefix_split(s, " "));
-            VERIFY_ARE_EQUAL("bar baz", s);
-            VERIFY_ARE_EQUAL("bar", til::prefix_split(s, " "));
-            VERIFY_ARE_EQUAL("baz", s);
-            VERIFY_ARE_EQUAL("baz", til::prefix_split(s, " "));
-            VERIFY_ARE_EQUAL("", s);
-        }
-        {
-            std::string_view s{ "foo123barbaz123" };
-            VERIFY_ARE_EQUAL("foo", til::prefix_split(s, "123"));
-            VERIFY_ARE_EQUAL("barbaz123", s);
-            VERIFY_ARE_EQUAL("barbaz", til::prefix_split(s, "123"));
-            VERIFY_ARE_EQUAL("", s);
-            VERIFY_ARE_EQUAL("", til::prefix_split(s, ""));
-            VERIFY_ARE_EQUAL("", s);
-        }
+        static constexpr auto split = [](const std::string_view& str, const char needle) {
+            std::vector<std::string_view> substrings;
+            for (auto&& s : til::split_iterator{ str, needle })
+            {
+                substrings.emplace_back(s);
+            }
+            return substrings;
+        };
+
+        std::vector<std::string_view> expected;
+        std::vector<std::string_view> actual;
+
+        expected = { "foo" };
+        actual = split("foo", ' ');
+        VERIFY_ARE_EQUAL(expected, actual);
+
+        expected = { "", "foo" };
+        actual = split(" foo", ' ');
+        VERIFY_ARE_EQUAL(expected, actual);
+
+        expected = { "foo", "" };
+        actual = split("foo ", ' ');
+        VERIFY_ARE_EQUAL(expected, actual);
+
+        expected = { "foo", "bar", "baz" };
+        actual = split("foo bar baz", ' ');
+        VERIFY_ARE_EQUAL(expected, actual);
+
+        expected = { "", "", "foo", "", "bar", "", "" };
+        actual = split(";;foo;;bar;;", ';');
+        VERIFY_ARE_EQUAL(expected, actual);
     }
 
     TEST_METHOD(CleanPathAndFilename)
@@ -180,5 +192,25 @@ class StringTests
     {
         VERIFY_IS_TRUE(til::is_legal_path(LR"(C:\Users\Documents and Settings\Users\;\Why not)"));
         VERIFY_IS_FALSE(til::is_legal_path(LR"(C:\Users\Documents and Settings\"Quote-un-quote users")"));
+    }
+
+    TEST_METHOD(IterateFontFamilies)
+    {
+        static constexpr auto expected = [](auto&&... args) {
+            return std::vector<std::wstring>{ std::forward<decltype(args)>(args)... };
+        };
+        static constexpr auto actual = [](std::wstring_view families) {
+            std::vector<std::wstring> split;
+            til::iterate_font_families(families, [&](std::wstring&& str) {
+                split.emplace_back(std::move(str));
+            });
+            return split;
+        };
+
+        VERIFY_ARE_EQUAL(expected(L"foo", L" b  a  r ", LR"(b"az)"), actual(LR"(  foo  ," b  a  r ",b\"az)"));
+        VERIFY_ARE_EQUAL(expected(LR"(foo, bar)"), actual(LR"("foo, bar")"));
+        VERIFY_ARE_EQUAL(expected(LR"("foo")", LR"('bar')"), actual(LR"('"foo"', "'bar'")"));
+        VERIFY_ARE_EQUAL(expected(LR"("foo")", LR"('bar')"), actual(LR"("\"foo\"", '\'bar\'')"));
+        VERIFY_ARE_EQUAL(expected(L"foo"), actual(LR"(,,,,foo,,,,)"));
     }
 };

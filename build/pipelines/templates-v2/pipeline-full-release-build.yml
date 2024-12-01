@@ -33,7 +33,7 @@ parameters:
       - arm64
   - name: codeSign
     type: boolean
-    default: true
+    default: false
   - name: generateSbom
     type: boolean
     default: true
@@ -51,6 +51,9 @@ parameters:
     type: boolean
     default: false
 
+  - name: extraPublishJobs
+    type: object
+    default: []
   - name: pool
     type: object
     default:
@@ -58,28 +61,9 @@ parameters:
       demands: ImageOverride -equals SHINE-VS17-Latest
 
 variables:
-  # If we are building a branch called "release-*", change the NuGet suffix
-  # to "preview". If we don't do that, XES will set the suffix to "release1"
-  # because it truncates the value after the first period.
-  # We also want to disable the suffix entirely if we're Release branded while
-  # on a release branch.
-  # main is special, however. XES ignores main. Since we never produce actual
-  # shipping builds from main, we want to force it to have a beta label as
-  # well.
-  #
-  # In effect:
-  # BRANCH / BRANDING | Release                    | Preview
-  # ------------------|----------------------------|-----------------------------
-  # release-*         | 1.12.20220427              | 1.13.20220427-preview
-  # main              | 1.14.20220427-experimental | 1.14.20220427-experimental
-  # all others        | 1.14.20220427-mybranch     | 1.14.20220427-mybranch
-  ${{ if startsWith(variables['Build.SourceBranchName'], 'release-') }}:
-    ${{ if eq(parameters.branding, 'Release') }}:
-      NoNuGetPackBetaVersion: true
-    ${{ else }}:
-      NuGetPackBetaVersion: preview
-  ${{ elseif eq(variables['Build.SourceBranchName'], 'main') }}:
-    NuGetPackBetaVersion: experimental
+  - template: variables-nuget-package-version.yml
+    parameters:
+      branding: ${{ parameters.branding }}
 
 resources:
   repositories:
@@ -108,10 +92,7 @@ stages:
           generateSbom: ${{ parameters.generateSbom }}
           codeSign: ${{ parameters.codeSign }}
           beforeBuildSteps: # Right before we build, lay down the universal package and localizations
-            - task: PkgESSetupBuild@12
-              displayName: Package ES - Setup Build
-              inputs:
-                disableOutputRedirect: true
+            - template: ./build/pipelines/templates-v2/steps-setup-versioning.yml@self
 
             - task: UniversalPackages@0
               displayName: Download terminal-internal Universal Package
@@ -119,10 +100,6 @@ stages:
                 feedListDownload: 2b3f8893-a6e8-411f-b197-a9e05576da48
                 packageListDownload: e82d490c-af86-4733-9dc4-07b772033204
                 versionListDownload: ${{ parameters.terminalInternalPackageVersion }}
-
-            - template: ./steps-fetch-and-prepare-localizations.yml
-              parameters:
-                includePseudoLoc: true
 
       - ${{ if eq(parameters.buildWPF, true) }}:
         # Add an Any CPU build flavor for the WPF control bits
@@ -139,10 +116,7 @@ stages:
             generateSbom: ${{ parameters.generateSbom }}
             codeSign: ${{ parameters.codeSign }}
             beforeBuildSteps:
-              - task: PkgESSetupBuild@12
-                displayName: Package ES - Setup Build
-                inputs:
-                  disableOutputRedirect: true
+              - template: ./build/pipelines/templates-v2/steps-setup-versioning.yml@self
               # WPF doesn't need the localizations or the universal package, but if it does... put them here.
 
   - stage: Package
@@ -193,4 +167,5 @@ stages:
           includePublicSymbolServer: ${{ parameters.publishSymbolsToPublic }}
           symbolExpiryTime: ${{ parameters.symbolExpiryTime }}
 
+      - ${{ parameters.extraPublishJobs }}
 ...
